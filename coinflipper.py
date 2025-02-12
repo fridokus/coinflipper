@@ -141,19 +141,18 @@ async def join_coinflip(update: Update, context: CallbackContext):
     # If max participants reached, select winner
     if len(coinflip["participants"]) >= coinflip["max"]:
         logging.info(f"Coinflip in chat {chat_id}, message {msg_id} reached max participants. Determining winner...")
-        # Verify all participants have enough balance
-        insufficient_funds = [
-            user_id for user_id in coinflip["participants"]
-            if get_user_balance(user_id, conn) < coinflip["amount"]
-        ]
-
-        if insufficient_funds:
-            logging.warning(f"Some participants lack funds: {insufficient_funds}")
-            await query.edit_message_text(
-                text=f"😳 Users lack balance to flip: {insufficient_funds}",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return  # Exit early if balances are insufficient
+        for user in coinflip["participants"]:
+            conn = await get_db_connection()
+            balance = await get_user_balance(user[0], conn)
+            await conn.close()
+            sats = to_sats(balance)
+            if sats < coinflip["sats"]:
+                logging.warning(f"Some participants lack funds")
+                await query.edit_message_text(
+                    text=f"😳 Users lack balance to flip",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return  # Exit early if balances are insufficient
 
         logging.info(f"All participants have sufficient balance. Determining winner...")
         winner = random.choice(coinflip["participants"])
@@ -279,6 +278,9 @@ async def addresses(update: Update, context: CallbackContext):
 def get_user_balance(user_id, conn):
     return conn.fetchval("SELECT balance FROM balances WHERE user_id = $1", user_id)
 
+def to_sats(balance):
+    return int(balance * 100_000_000)
+
 async def balance(update: Update, context: CallbackContext):
     """Handles the /balance command"""
     user = update.effective_user
@@ -294,7 +296,7 @@ async def balance(update: Update, context: CallbackContext):
         await update.message.reply_text(f"{username}, you have no balance yet.")
     else:
         logging.info(f"User {user_id} ({username}) checked balance: {balance} BTC.")
-        await update.message.reply_text(f"{username}, your balance is {int(balance * 100_000_000)} sats 💷")
+        await update.message.reply_text(f"{username}, your balance is {to_sats(balance)} sats 💷")
 
 async def withdraw(update: Update, context: CallbackContext):
     """Handles the /withdraw command to send BTC, ensuring the amount includes the fee."""
