@@ -40,32 +40,69 @@ async def start(update: Update, context: CallbackContext):
         "🏠 `/address` – Get a new Bitcoin deposit address\n"
         "📤 `/withdraw <address> <amount_in_sats>` – Withdraw Bitcoin to an external address\n\n"
         "🔗 *Source Code:* [GitHub Repository](https://github.com/fridokus/coinflipper)\n\n"
+        "⚠  *NOTE:* This bot is super unstable and any funds sent in will possibly, and even probably, get lost forever. Use at your own risk and with small amounts..\n\n"
         "Have fun flipping coins! 🚀"
     )
 
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def address(update: Update, context: CallbackContext):
-    """Handles the /address command by generating a new BTC address"""
+    """Handles the /address command by generating a new BTC address if the user has not exceeded the limit."""
     user_id = update.effective_user.id
     rpc = AuthServiceProxy(f"http://{RPC_USER}:{RPC_PASSWORD}@{RPC_HOST}:{RPC_PORT}")
 
-    try:
-        address = rpc.getnewaddress(f"user_{user_id}")
-    except JSONRPCException as e:
-        logging.error(f"Error generating address for user {user_id}: {e}")
-        await update.message.reply_text("Error generating address 💀")
+    conn = await get_db_connection()
+
+    # Count existing addresses for the user
+    address_count = await conn.fetchval(
+        "SELECT COUNT(*) FROM addresses WHERE user_id = $1", user_id
+    )
+
+    if address_count >= 100:
+        logging.warning(f"User {user_id} attempted to generate more than 100 addresses.")
+        await update.message.reply_text("You have already generated 100 addresses. Limit reached.")
+        await conn.close()
         return
 
-    conn = await get_db_connection()
+    # Generate a new address
+    new_address = rpc.getnewaddress(f"user_{user_id}")
+
+    # Ensure the user has an account in the DB
     await conn.execute(
         "INSERT INTO balances (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
         user_id
     )
+
+    # Store the generated address
+    await conn.execute(
+        "INSERT INTO addresses (user_id, address) VALUES ($1, $2)",
+        user_id, new_address
+    )
+
+    await conn.close()
+    logging.info(f"User {user_id} generated a new address: {new_address}")
+
+    await update.message.reply_text(f"Your Bitcoin address: {new_address}")
+
+
+async def addresses(update: Update, context: CallbackContext):
+    """Handles the /addresses command, listing all addresses the user has generated."""
+    user_id = update.effective_user.id
+
+    conn = await get_db_connection()
+    rows = await conn.fetch("SELECT address FROM addresses WHERE user_id = $1", user_id)
     await conn.close()
 
-    logging.info(f"Generated new address {address} for user {user_id}.")
-    await update.message.reply_text(f"Your Bitcoin address 🎲: {address}")
+    if not rows:
+        await update.message.reply_text("You have not generated any addresses yet.")
+        return
+
+    # Convert list of addresses into a formatted message
+    address_list = "\n".join([row["address"] for row in rows])
+    response = f"Your generated addresses:\n{address_list}"
+
+    await update.message.reply_text(response)
+
 
 async def balance(update: Update, context: CallbackContext):
     """Handles the /balance command"""
@@ -85,7 +122,7 @@ async def balance(update: Update, context: CallbackContext):
         await update.message.reply_text(f"{username}, your balance is {int(balance * 100_000_000)} sats 💷")
 
 async def withdraw(update: Update, context: CallbackContext):
-    """Handles the /withdraw command to send BTC"""
+    """Handles the /withdraw command to send BTC, ensuring the amount includes the fee."""
     user_id = update.effective_user.id
 
     if len(context.args) != 2:
@@ -93,15 +130,15 @@ async def withdraw(update: Update, context: CallbackContext):
         return
 
     withdraw_address = context.args[0]
-    amount_sats = int(context.args[1])
-    amount_btc = Decimal(amount_sats) / Decimal(100_000_000)
+    total_sats = int(context.args[1])  # User-specified amount in satoshis
+    total_btc = Decimal(total_sats) / Decimal(100_000_000)  # Convert to BTC
 
     conn = await get_db_connection()
     balance = await conn.fetchval("SELECT balance FROM balances WHERE user_id = $1", user_id)
 
-    if balance is None or balance < amount_btc:
-        logging.warning(f"User {user_id} attempted to withdraw {amount_btc} BTC but has insufficient balance.")
-        await update.message.reply_text("Insufficient balance 🧼")
+    if balance is None or balance < total_btc:
+        logging.warning(f"User {user_id} attempted to withdraw {total_btc} BTC but has insufficient balance.")
+        await update.message.reply_text("Insufficient balance.")
         await conn.close()
         return
 
@@ -113,33 +150,38 @@ async def withdraw(update: Update, context: CallbackContext):
         total_input = Decimal(0)
 
         for utxo in utxos:
-            if total_input >= amount_btc:
+            if total_input >= total_btc:
                 break
             selected_utxos.append(utxo)
             total_input += Decimal(utxo["amount"])
 
-        if total_input < amount_btc:
+        if total_input < total_btc:
             logging.warning(f"User {user_id} has insufficient confirmed UTXOs for withdrawal.")
             await update.message.reply_text("Not enough confirmed UTXOs.")
             await conn.close()
             return
 
         inputs = [{"txid": utxo["txid"], "vout": utxo["vout"]} for utxo in selected_utxos]
-        outputs = {withdraw_address: float(amount_btc)}
+        outputs = {withdraw_address: 0}  # Placeholder
 
+        # Create a raw transaction to estimate fee
         raw_tx = rpc.createrawtransaction(inputs, outputs)
-        estimated_size = len(rpc.decoderawtransaction(raw_tx)["hex"]) // 2
-        fee_sats = estimated_size * 2
+        estimated_size = len(rpc.decoderawtransaction(raw_tx)["hex"]) // 2  # Convert hex length to bytes
+        fee_sats = estimated_size * 2  # Assuming 2 sat/vB fee rate
         fee_btc = Decimal(fee_sats) / Decimal(100_000_000)
-        total_cost_btc = amount_btc + fee_btc
 
-        if total_cost_btc > balance:
-            logging.warning(f"User {user_id} has insufficient funds after fee calculation.")
-            await update.message.reply_text("Not enough balance to cover amount + fees.")
+        # Ensure user-specified amount is greater than the fee
+        if total_btc <= fee_btc:
+            logging.warning(f"User {user_id} tried withdrawing {total_btc} BTC, but fee ({fee_btc} BTC) is too high.")
+            await update.message.reply_text("Amount too small after fees.")
             await conn.close()
             return
 
-        outputs[withdraw_address] = float(amount_btc)
+        # Adjust the withdrawal amount (subtract the fee from total)
+        withdraw_btc = total_btc - fee_btc
+        outputs[withdraw_address] = float(withdraw_btc)
+
+        # Create and send transaction
         raw_tx = rpc.createrawtransaction(inputs, outputs)
         signed_tx = rpc.signrawtransactionwithwallet(raw_tx)
         txid = rpc.sendrawtransaction(signed_tx["hex"])
@@ -150,16 +192,17 @@ async def withdraw(update: Update, context: CallbackContext):
         await conn.close()
         return
 
+    # Deduct full amount (user-specified) from balance
     await conn.execute(
-        "UPDATE balances SET balance = balance - $1 WHERE user_id = $2", total_cost_btc, user_id
+        "UPDATE balances SET balance = balance - $1 WHERE user_id = $2", total_btc, user_id
     )
     await conn.close()
 
-    logging.info(f"User {user_id} withdrew {amount_btc} BTC to {withdraw_address}. Fee: {fee_btc} BTC. TXID: {txid}")
+    logging.info(f"User {user_id} withdrew {withdraw_btc} BTC to {withdraw_address}. Fee: {fee_btc} BTC. TXID: {txid}")
     await update.message.reply_text(
-        f"Sent {int(amount_btc * 100_000_000)} sats to {withdraw_address}!\n"
+        f"Sent {int(withdraw_btc * 100_000_000)} sats to {withdraw_address}!\n"
         f"Fee: {fee_sats} sats\n"
-        f"Total deducted: {int(total_cost_btc * 100_000_000)} sats\n\n"
+        f"Total deducted: {total_sats} sats\n\n"
         f"Transaction ID: {txid}"
     )
 
@@ -172,6 +215,7 @@ def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("address", address))
+    app.add_handler(CommandHandler("addresses", addresses))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("withdraw", withdraw))
     app.run_polling()

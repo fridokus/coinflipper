@@ -2,8 +2,17 @@
 
 import asyncio
 import asyncpg
+import logging
 from bitcoinrpc.authproxy import AuthServiceProxy
 from decimal import Decimal
+
+# Configure logging
+LOG_FILE = "/var/log/deposit_checker.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # Bitcoin Core RPC Configuration
 RPC_USER = "rpcuser"
@@ -27,53 +36,57 @@ def get_rpc_connection():
 
 async def check_deposits():
     """Scans for new deposits and updates user balances"""
-    rpc = get_rpc_connection()
-    conn = await get_db_connection()
+    logging.info("Checking for new deposits...")
 
-    # Get all unspent transactions
-    unspent_txs = rpc.listunspent()
+    try:
+        rpc = get_rpc_connection()
+        conn = await get_db_connection()
 
-    for tx in unspent_txs:
-        txid = tx["txid"]
-        vout = tx["vout"]  # Unique per TXID
-        address = tx["address"]
-        amount = Decimal(tx["amount"])
+        # Get all unspent transactions
+        unspent_txs = rpc.listunspent()
 
-        # Find which user owns this address
-        labels = rpc.getaddressinfo(address).get("labels", [])
-        if not labels:
-            continue
+        for tx in unspent_txs:
+            txid = tx["txid"]
+            vout = tx["vout"]  # Unique per TXID
+            address = tx["address"]
+            amount = Decimal(tx["amount"])
 
-        label = labels[0]  # Example: "user_123456789"
-        if not label.startswith("user_"):
-            continue
+            # Find which user owns this address
+            labels = rpc.getaddressinfo(address).get("labels", [])
+            if not labels:
+                continue
 
-        user_id = int(label.split("_")[1])
+            label = labels[0]  # Example: "user_123456789"
+            if not label.startswith("user_"):
+                continue
 
-        # Check if this transaction has already been recorded
-        tx_exists = await conn.fetchval(
-            "SELECT COUNT(*) FROM transactions WHERE txid = $1 AND vout = $2", txid, vout
-        )
+            user_id = int(label.split("_")[1])
 
-        if tx_exists:
-            continue  # Skip already recorded transactions
+            # Check if this transaction has already been recorded
+            tx_exists = await conn.fetchval(
+                "SELECT COUNT(*) FROM transactions WHERE txid = $1 AND vout = $2", txid, vout
+            )
 
-        # Update user's balance
-        await conn.execute(
-            "UPDATE balances SET balance = balance + $1 WHERE user_id = $2",
-            amount,
-            user_id,
-        )
+            if tx_exists: continue
 
-        # Insert into transactions table to mark it as processed
-        await conn.execute(
-            "INSERT INTO transactions (user_id, type, amount, txid, vout) VALUES ($1, 'deposit', $2, $3, $4)",
-            user_id, amount, txid, vout
-        )
+            # Update user's balance
+            await conn.execute(
+                "UPDATE balances SET balance = balance + $1 WHERE user_id = $2",
+                amount,
+                user_id,
+            )
 
-        print(f"Deposited {amount} BTC to user {user_id}")
+            # Insert into transactions table to mark it as processed
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, txid, vout) VALUES ($1, 'deposit', $2, $3, $4)",
+                user_id, amount, txid, vout
+            )
 
-    await conn.close()
+            logging.info(f"Deposited {amount} BTC to user {user_id} (TXID: {txid}, VOUT: {vout})")
+
+        await conn.close()
+    except Exception as e:
+        logging.error(f"Error in check_deposits: {e}")
 
 async def main():
     while True:
@@ -81,4 +94,5 @@ async def main():
         await asyncio.sleep(20)  # Check every 20 seconds
 
 if __name__ == "__main__":
+    logging.info("Starting deposit checker...")
     asyncio.run(main())
