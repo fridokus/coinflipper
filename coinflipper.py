@@ -2,11 +2,15 @@
 
 import asyncpg
 import logging
+import random
 from bitcoinrpc.authproxy import AuthServiceProxy
 from bitcoinrpc.authproxy import JSONRPCException
 from decimal import Decimal
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, CallbackContext
 
 # Configure logging
 LOG_FILE = "/var/log/coinflipper.log"
@@ -25,6 +29,138 @@ DB_HOST = "127.0.0.1"
 DB_NAME = "coinflipper"
 DB_USER = "botuser"
 DB_PASSWORD = "123"
+
+coinflips = {}
+
+async def coinflip(update: Update, context: CallbackContext):
+    if len(context.args) != 2:
+        await update.message.reply_text("Usage: /coinflip <sats> <number of participants>")
+        return
+
+    sats = int(context.args[0])
+    max_participants = int(context.args[1])
+    user_id = update.effective_user.id
+    username = update.effective_user.username or update.effective_user.full_name
+    chat_id = update.message.chat_id
+    message = update.message
+
+    if max_participants < 2:
+        await update.message.reply_text("Minimum participants must be 2.")
+        return
+
+    # Check if user has enough balance
+    conn = await get_db_connection()
+    balance = await conn.fetchval("SELECT balance FROM balances WHERE user_id = $1", user_id)
+    await conn.close()
+
+    if balance is None or balance < sats:
+        await update.message.reply_text("You don't have enough balance to start this coinflip.")
+        return
+
+    # Create coinflip entry
+    keyboard = [
+        [InlineKeyboardButton("Join Coinflip", callback_data=f"join_{chat_id}_{message.message_id}")],
+        [InlineKeyboardButton("Cancel Coinflip", callback_data=f"cancel_{chat_id}_{message.message_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    msg = await update.message.reply_text(
+        f"🎲 Coinflip started! {sats} sats entry. {max_participants} players needed.",
+        reply_markup=reply_markup
+    )
+
+    coinflips[(chat_id, msg.message_id)] = {
+        "creator": user_id,
+        "sats": sats,
+        "max": max_participants,
+        "participants": [(user_id, username)],
+        "start_time": datetime.utcnow()
+    }
+
+async def join_coinflip(update: Update, context: CallbackContext):
+    query = update.callback_query
+    _, chat_id, msg_id = query.data.split("_")
+    chat_id, msg_id = int(chat_id), int(msg_id)
+    user_id = query.from_user.id
+    username = query.from_user.username or query.from_user.full_name
+
+    if (chat_id, msg_id) not in coinflips:
+        await query.answer("This coinflip no longer exists.")
+        return
+
+    coinflip = coinflips[(chat_id, msg_id)]
+
+    # Auto-cancel if more than 2 hours passed
+    if datetime.utcnow() - coinflip["start_time"] > timedelta(hours=2):
+        del coinflips[(chat_id, msg_id)]
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=msg_id, text="Coinflip canceled due to timeout."
+        )
+        return
+
+    if user_id in [p[0] for p in coinflip["participants"]]:
+        await query.answer("You have already joined.")
+        return
+
+    # Check balance
+    conn = await get_db_connection()
+    balance = await conn.fetchval("SELECT balance FROM balances WHERE user_id = $1", user_id)
+    await conn.close()
+    if balance is None or balance < coinflip["sats"]:
+        await query.answer("You don't have enough balance.")
+        return
+
+    # Add user to coinflip
+    coinflip["participants"].append((user_id, username))
+
+    # Update message
+    participant_list = "\n".join([p[1] for p in coinflip["participants"]])
+    keyboard = [
+        [InlineKeyboardButton("Join Coinflip", callback_data=f"join_{chat_id}_{msg_id}")],
+        [InlineKeyboardButton("Cancel Coinflip", callback_data=f"cancel_{chat_id}_{msg_id}")]
+    ]
+    await query.edit_message_text(
+        text=f"🎲 Coinflip started! {coinflip['sats']} sats entry. {coinflip['max']} players needed.\n\nParticipants:\n{participant_list}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+    # If max participants reached, select winner
+    if len(coinflip["participants"]) >= coinflip["max"]:
+        winner = random.choice(coinflip["participants"])
+        winner_id, winner_name = winner
+        total_prize = coinflip["sats"] * (coinflip["max"] - 1)
+
+        conn = await get_db_connection()
+        async with conn.transaction():
+            for participant_id, _ in coinflip["participants"]:
+                if participant_id != winner_id:
+                    await conn.execute("UPDATE balances SET balance = balance - $1 WHERE user_id = $2", coinflip["sats"], participant_id)
+            await conn.execute("UPDATE balances SET balance = balance + $1 WHERE user_id = $2", total_prize, winner_id)
+        await conn.close()
+
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=msg_id,
+            text=f"🎉 {winner_name} won the coinflip and received {total_prize} sats!"
+        )
+        del coinflips[(chat_id, msg_id)]
+
+async def cancel_coinflip(update: Update, context: CallbackContext):
+    query = update.callback_query
+    _, chat_id, msg_id = query.data.split("_")
+    chat_id, msg_id = int(chat_id), int(msg_id)
+    user_id = query.from_user.id
+
+    if (chat_id, msg_id) not in coinflips:
+        await query.answer("This coinflip no longer exists.")
+        return
+
+    coinflip = coinflips[(chat_id, msg_id)]
+    if user_id != coinflip["creator"]:
+        await query.answer("Only the creator can cancel.")
+        return
+
+    del coinflips[(chat_id, msg_id)]
+    await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Coinflip canceled.")
+
 
 async def get_db_connection():
     return await asyncpg.connect(
@@ -218,6 +354,9 @@ def main():
     app.add_handler(CommandHandler("addresses", addresses))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("withdraw", withdraw))
+    app.add_handler(CommandHandler("coinflip", coinflip))
+    app.add_handler(CallbackQueryHandler(join_coinflip, pattern="^join_"))
+    app.add_handler(CallbackQueryHandler(cancel_coinflip, pattern="^cancel_"))
     app.run_polling()
 
 if __name__ == "__main__":
