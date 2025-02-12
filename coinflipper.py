@@ -72,17 +72,18 @@ async def coinflip(update: Update, context: CallbackContext):
         reply_markup=reply_markup
     )
 
-    coinflips[(chat_id, msg.message_id)] = {
+    coinflips[(chat_id, message.message_id)] = {
         "creator": user_id,
         "sats": sats,
         "max": max_participants,
-        "participants": [(user_id, username)],
+        "participants": [],
         "start_time": datetime.utcnow()
     }
 
     logging.info(f"Coinflip created by user {user_id} ({username}) with message_id {msg.message_id} in chat {chat_id}.")
 
 async def join_coinflip(update: Update, context: CallbackContext):
+    logging.info(coinflips)
     query = update.callback_query
     _, chat_id, msg_id = query.data.split("_")
     chat_id, msg_id = int(chat_id), int(msg_id)
@@ -153,9 +154,10 @@ async def join_coinflip(update: Update, context: CallbackContext):
         await conn.close()
 
         logging.info(f"Coinflip in chat {chat_id}, message {msg_id}: Winner is user {winner_id} ({winner_name}) winning {total_prize} sats.")
-        await context.bot.edit_message_text(
-            chat_id=chat_id, message_id=msg_id,
-            text=f"🎉 {winner_name} won the coinflip and received {total_prize} sats!"
+        emoji = random.choice(['🔥', '🎉', '🥂', '💹', '🦈', '🗽'])
+        await query.edit_message_text(
+            text=f"{emoji} {winner_name} won the coinflip and received {total_prize} sats!",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         del coinflips[(chat_id, msg_id)]
 
@@ -180,7 +182,7 @@ async def cancel_coinflip(update: Update, context: CallbackContext):
 
     del coinflips[(chat_id, msg_id)]
     logging.info(f"User {user_id} canceled coinflip in chat {chat_id}, message {msg_id}.")
-    await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Coinflip canceled.")
+    await query.edit_message_text(ext="Coinflip cancelled")
 
 async def get_db_connection():
     return await asyncpg.connect(
