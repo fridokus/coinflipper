@@ -21,6 +21,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 
 RPC_USER = "rpcuser"
 RPC_PASSWORD = "123"
@@ -206,10 +208,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
             f"Coinflip in chat {chat_id}, message {msg_id}: Winner is user {winner_id} ({winner_name}) winning {total_prize} sats."
         )
         emoji = random.choice(["🔥", "🎉", "🥂", "💹", "🦈", "🗽"])
-        await query.edit_message_text(
-            text=f"{emoji} {winner_name} won the coinflip and received {total_prize} sats!",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        await query.edit_message_text(text=f"{emoji} {winner_name} won the coinflip and received {total_prize} sats!\n\nParticipants:\n{participant_list}")
         del coinflips[(chat_id, msg_id)]
 
 
@@ -339,7 +338,7 @@ async def balance(update: Update, context: CallbackContext):
         logging.info(f"User {user_id} ({username}) checked balance: No balance found.")
         await update.message.reply_text(f"{username}, you have no balance yet.")
     else:
-        logging.info(f"User {user_id} ({username}) checked balance: {balance} BTC.")
+        logging.info(f"User {user_id} ({username}) checked balance: {balance} sats.")
         await update.message.reply_text(
             f"{username}, your balance is {balance} sats 💷"
         )
