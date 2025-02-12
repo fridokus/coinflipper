@@ -32,8 +32,18 @@ async def get_db_connection():
     )
 
 async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text("Welcome to the coinflipper bot 💸")
-    logging.info(f"User {update.effective_user.id} started the bot.")
+    """Handles the /start command by showing available commands."""
+    help_text = (
+        "🎲 *Welcome to Coinflipper!* 🎲\n\n"
+        "This bot helps you manage Bitcoin transactions. Here are the available commands:\n\n"
+        "💰 `/balance` – Check your Bitcoin balance\n"
+        "🏠 `/address` – Get a new Bitcoin deposit address\n"
+        "📤 `/withdraw <address> <amount_in_sats>` – Withdraw Bitcoin to an external address\n\n"
+        "🔗 *Source Code:* [GitHub Repository](https://github.com/fridokus/coinflipper)\n\n"
+        "Have fun flipping coins! 🚀"
+    )
+
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def address(update: Update, context: CallbackContext):
     """Handles the /address command by generating a new BTC address"""
