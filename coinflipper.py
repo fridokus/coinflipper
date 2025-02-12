@@ -141,6 +141,21 @@ async def join_coinflip(update: Update, context: CallbackContext):
     # If max participants reached, select winner
     if len(coinflip["participants"]) >= coinflip["max"]:
         logging.info(f"Coinflip in chat {chat_id}, message {msg_id} reached max participants. Determining winner...")
+        # Verify all participants have enough balance
+        insufficient_funds = [
+            user_id for user_id in coinflip["participants"]
+            if get_user_balance(user_id, conn) < coinflip["amount"]
+        ]
+
+        if insufficient_funds:
+            logging.warning(f"Some participants lack funds: {insufficient_funds}")
+            await query.edit_message_text(
+                text=f"😳 Users lack balance to flip: {insufficient_funds}",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return  # Exit early if balances are insufficient
+
+        logging.info(f"All participants have sufficient balance. Determining winner...")
         winner = random.choice(coinflip["participants"])
         winner_id, winner_name = winner
         total_prize = coinflip["sats"] * (coinflip["max"] - 1)
@@ -197,6 +212,7 @@ async def start(update: Update, context: CallbackContext):
         "💰 `/balance` – Check your Bitcoin balance\n"
         "🏠 `/address` – Get a new Bitcoin deposit address\n"
         "📤 `/withdraw <address> <amount_in_sats>` – Withdraw Bitcoin to an external address\n\n"
+        "🐬 `/coinflip <sats> <number of participants>` – Start coinflip, winner takes all\n\n"
         "🔗 *Source Code:* [GitHub Repository](https://github.com/fridokus/coinflipper)\n\n"
         "⚠  *NOTE:* This bot is super unstable and any funds sent in will possibly, and even probably, get lost forever. Use at your own risk and with small amounts..\n\n"
         "Have fun flipping coins! 🚀"
@@ -260,6 +276,9 @@ async def addresses(update: Update, context: CallbackContext):
 
     await update.message.reply_text(response)
 
+def get_user_balance(user_id, conn):
+    return conn.fetchval("SELECT balance FROM balances WHERE user_id = $1", user_id)
+
 async def balance(update: Update, context: CallbackContext):
     """Handles the /balance command"""
     user = update.effective_user
@@ -267,7 +286,7 @@ async def balance(update: Update, context: CallbackContext):
     username = user.username if user.username else user.full_name
 
     conn = await get_db_connection()
-    balance = await conn.fetchval("SELECT balance FROM balances WHERE user_id = $1", user_id)
+    balance = await get_user_balance(user_id, conn)
     await conn.close()
 
     if balance is None:
