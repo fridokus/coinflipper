@@ -44,6 +44,9 @@ async def coinflip(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
     message = update.message
 
+    # Log the coinflip initiation attempt
+    logging.info(f"User {user_id} ({username}) initiated coinflip: entry={sats} sats, max_participants={max_participants} in chat {chat_id}.")
+
     if max_participants < 2:
         await update.message.reply_text("Minimum participants must be 2.")
         return
@@ -54,10 +57,11 @@ async def coinflip(update: Update, context: CallbackContext):
     await conn.close()
 
     if balance is None or balance < sats:
+        logging.info(f"User {user_id} ({username}) has insufficient balance ({balance}) for coinflip entry of {sats} sats.")
         await update.message.reply_text("You don't have enough balance to start this coinflip.")
         return
 
-    # Create coinflip entry
+    # Create coinflip entry with inline keyboard
     keyboard = [
         [InlineKeyboardButton("Join Coinflip", callback_data=f"join_{chat_id}_{message.message_id}")],
         [InlineKeyboardButton("Cancel Coinflip", callback_data=f"cancel_{chat_id}_{message.message_id}")]
@@ -76,6 +80,8 @@ async def coinflip(update: Update, context: CallbackContext):
         "start_time": datetime.utcnow()
     }
 
+    logging.info(f"Coinflip created by user {user_id} ({username}) with message_id {msg.message_id} in chat {chat_id}.")
+
 async def join_coinflip(update: Update, context: CallbackContext):
     query = update.callback_query
     _, chat_id, msg_id = query.data.split("_")
@@ -83,7 +89,11 @@ async def join_coinflip(update: Update, context: CallbackContext):
     user_id = query.from_user.id
     username = query.from_user.username or query.from_user.full_name
 
+    # Log the join attempt
+    logging.info(f"User {user_id} ({username}) attempting to join coinflip in chat {chat_id}, message {msg_id}.")
+
     if (chat_id, msg_id) not in coinflips:
+        logging.warning(f"User {user_id} ({username}) attempted to join a non-existent coinflip in chat {chat_id}, message {msg_id}.")
         await query.answer("This coinflip no longer exists.")
         return
 
@@ -91,6 +101,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
 
     # Auto-cancel if more than 2 hours passed
     if datetime.utcnow() - coinflip["start_time"] > timedelta(hours=2):
+        logging.info(f"Coinflip in chat {chat_id}, message {msg_id} timed out. Canceling coinflip.")
         del coinflips[(chat_id, msg_id)]
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=msg_id, text="Coinflip canceled due to timeout."
@@ -98,6 +109,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
         return
 
     if user_id in [p[0] for p in coinflip["participants"]]:
+        logging.info(f"User {user_id} ({username}) already joined coinflip in chat {chat_id}, message {msg_id}.")
         await query.answer("You have already joined.")
         return
 
@@ -106,13 +118,15 @@ async def join_coinflip(update: Update, context: CallbackContext):
     balance = await conn.fetchval("SELECT balance FROM balances WHERE user_id = $1", user_id)
     await conn.close()
     if balance is None or balance < coinflip["sats"]:
+        logging.info(f"User {user_id} ({username}) has insufficient balance ({balance}) to join coinflip requiring {coinflip['sats']} sats.")
         await query.answer("You don't have enough balance.")
         return
 
     # Add user to coinflip
     coinflip["participants"].append((user_id, username))
+    logging.info(f"User {user_id} ({username}) successfully joined coinflip in chat {chat_id}, message {msg_id}. Total participants: {len(coinflip['participants'])}.")
 
-    # Update message
+    # Update the coinflip message with the new participant list
     participant_list = "\n".join([p[1] for p in coinflip["participants"]])
     keyboard = [
         [InlineKeyboardButton("Join Coinflip", callback_data=f"join_{chat_id}_{msg_id}")],
@@ -125,6 +139,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
 
     # If max participants reached, select winner
     if len(coinflip["participants"]) >= coinflip["max"]:
+        logging.info(f"Coinflip in chat {chat_id}, message {msg_id} reached max participants. Determining winner...")
         winner = random.choice(coinflip["participants"])
         winner_id, winner_name = winner
         total_prize = coinflip["sats"] * (coinflip["max"] - 1)
@@ -137,6 +152,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
             await conn.execute("UPDATE balances SET balance = balance + $1 WHERE user_id = $2", total_prize, winner_id)
         await conn.close()
 
+        logging.info(f"Coinflip in chat {chat_id}, message {msg_id}: Winner is user {winner_id} ({winner_name}) winning {total_prize} sats.")
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=msg_id,
             text=f"🎉 {winner_name} won the coinflip and received {total_prize} sats!"
@@ -149,18 +165,22 @@ async def cancel_coinflip(update: Update, context: CallbackContext):
     chat_id, msg_id = int(chat_id), int(msg_id)
     user_id = query.from_user.id
 
+    logging.info(f"User {user_id} requested cancellation of coinflip in chat {chat_id}, message {msg_id}.")
+
     if (chat_id, msg_id) not in coinflips:
+        logging.warning(f"User {user_id} attempted to cancel a non-existent coinflip in chat {chat_id}, message {msg_id}.")
         await query.answer("This coinflip no longer exists.")
         return
 
     coinflip = coinflips[(chat_id, msg_id)]
     if user_id != coinflip["creator"]:
+        logging.info(f"User {user_id} is not the creator and cannot cancel coinflip in chat {chat_id}, message {msg_id}.")
         await query.answer("Only the creator can cancel.")
         return
 
     del coinflips[(chat_id, msg_id)]
+    logging.info(f"User {user_id} canceled coinflip in chat {chat_id}, message {msg_id}.")
     await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Coinflip canceled.")
-
 
 async def get_db_connection():
     return await asyncpg.connect(
@@ -220,7 +240,6 @@ async def address(update: Update, context: CallbackContext):
 
     await update.message.reply_text(f"Your Bitcoin address: {new_address}")
 
-
 async def addresses(update: Update, context: CallbackContext):
     """Handles the /addresses command, listing all addresses the user has generated."""
     user_id = update.effective_user.id
@@ -238,7 +257,6 @@ async def addresses(update: Update, context: CallbackContext):
     response = f"Your generated addresses:\n{address_list}"
 
     await update.message.reply_text(response)
-
 
 async def balance(update: Update, context: CallbackContext):
     """Handles the /balance command"""
