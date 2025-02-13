@@ -36,6 +36,8 @@ DB_PASSWORD = "123"
 
 coinflips = {}
 
+with open('trivia.txt', 'r') as f:
+    TRIVIA = f.read().splitlines()
 
 async def coinflip(update: Update, context: CallbackContext):
     if len(context.args) != 2:
@@ -249,6 +251,10 @@ async def get_db_connection():
     )
 
 
+async def trivia(update: Update, context: CallbackContext):
+    trivia_text = random.choice(TRIVIA)
+    await update.message.reply_text(trivia_text, parse_mode="Markdown")
+
 async def start(update: Update, context: CallbackContext):
     """Handles the /start command by showing available commands."""
     help_text = (
@@ -337,6 +343,12 @@ async def balance(update: Update, context: CallbackContext):
         )
 
 
+def create_and_send_tx(rpc, inputs, withdraw_address, amount_btc, fee_btc):
+    outputs = {withdraw_address: float(amount_btc - fee_btc)}
+    raw_tx = rpc.createrawtransaction(inputs, outputs)
+    signed_tx = rpc.signrawtransactionwithwallet(raw_tx)
+    return rpc.sendrawtransaction(signed_tx["hex"])
+
 def select_utxos(rpc, amount_btc):
     utxos = rpc.listunspent(1, 9999999, [])
     selected, total_input = [], Decimal(0)
@@ -358,12 +370,6 @@ async def update_balance(user_id: int, amount: int):
     await conn.execute("UPDATE balances SET balance = balance - $1 WHERE user_id = $2", amount, user_id)
     await conn.close()
 
-def create_and_send_tx(rpc, inputs, withdraw_address, amount_btc, fee_btc):
-    outputs = {withdraw_address: float(amount_btc - fee_btc)}
-    raw_tx = rpc.createrawtransaction(inputs, outputs)
-    signed_tx = rpc.signrawtransactionwithwallet(raw_tx)
-    return rpc.sendrawtransaction(signed_tx["hex"])
-
 async def withdraw(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
 
@@ -377,6 +383,7 @@ async def withdraw(update: Update, context: CallbackContext):
 
     balance = await get_user_balance(user_id)
     if balance is None or balance < total_sats:
+        logging.warning(f"User {user_id} attempted to withdraw {total_sats} sats but has insufficient balance.")
         await update.message.reply_text("⚠️ *Insufficient balance!* Please check your funds. 💰", parse_mode="Markdown")
         return
 
@@ -385,6 +392,7 @@ async def withdraw(update: Update, context: CallbackContext):
     try:
         selected_utxos, total_input = select_utxos(rpc, total_btc)
         if total_input < total_btc:
+            logging.warning(f"User {user_id} has insufficient confirmed UTXOs for withdrawal.")
             await update.message.reply_text("⏳ *Not enough confirmed UTXOs!* Please wait for more confirmations. 🔄", parse_mode="Markdown")
             return
 
@@ -395,6 +403,7 @@ async def withdraw(update: Update, context: CallbackContext):
         fee_btc = Decimal(fee_sats) / Decimal(100_000_000)
 
         if total_btc <= fee_btc:
+            logging.warning(f"User {user_id} tried withdrawing {total_sats} sats, but fee ({fee_sats} sats) is too high.")
             await update.message.reply_text("⚠️ *Amount too small after fees!* Try a larger withdrawal. 🔢", parse_mode="Markdown")
             return
 
@@ -402,8 +411,11 @@ async def withdraw(update: Update, context: CallbackContext):
         await update_balance(user_id, total_sats)
 
     except Exception as e:
+        logging.error(f"Error during withdrawal for user {user_id}: {e}")
         await update.message.reply_text(f"❌ *Error sending BTC:* `{str(e)}`", parse_mode="Markdown")
         return
+
+    logging.info(f"User {user_id} withdrew {total_sats - fee_sats} sats to {withdraw_address}. Fee: {fee_sats} sats. TXID: {txid}")
 
     await update.message.reply_text(
         f"✅ *Withdrawal Successful!* 🎉\n"
@@ -428,6 +440,7 @@ def main():
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("withdraw", withdraw))
     app.add_handler(CommandHandler("coinflip", coinflip))
+    app.add_handler(CommandHandler("trivia", trivia))
     app.add_handler(CallbackQueryHandler(join_coinflip, pattern="^join_"))
     app.add_handler(CallbackQueryHandler(cancel_coinflip, pattern="^cancel_"))
     app.run_polling()

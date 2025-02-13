@@ -1,0 +1,2 @@
+For any given point in time, the next block is on average a 20 minute block. That is, it was on average 10 minutes since the last block and on average 10 minutes to the next block https://r6.ca/blog/20180225T160548Z.html
+The highest fee ever paid for a bitcoin tx was 8365497568 sats in b5a2af5845a8d3796308ff9840e567b14cf6bb158ff26c999e6f9a1f5448f9aa
