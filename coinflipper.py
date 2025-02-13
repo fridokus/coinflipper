@@ -354,8 +354,8 @@ async def withdraw(update: Update, context: CallbackContext):
         return
 
     withdraw_address = context.args[0]
-    total_sats = int(context.args[1])  # User-specified amount in satoshis
-    total_btc = Decimal(total_sats) / Decimal(100_000_000)  # Convert to BTC
+    total_sats = int(context.args[1])
+    total_btc = Decimal(total_sats) / Decimal(100_000_000)
 
     conn = await get_db_connection()
     balance = await conn.fetchval(
@@ -394,14 +394,14 @@ async def withdraw(update: Update, context: CallbackContext):
         inputs = [
             {"txid": utxo["txid"], "vout": utxo["vout"]} for utxo in selected_utxos
         ]
-        outputs = {withdraw_address: 0}  # Placeholder
+        outputs = {withdraw_address: 0}
 
         # Create a raw transaction to estimate fee
         raw_tx = rpc.createrawtransaction(inputs, outputs)
         estimated_size = (
             len(rpc.decoderawtransaction(raw_tx)["hex"]) // 2
-        )  # Convert hex length to bytes
-        fee_sats = estimated_size * 2  # Assuming 2 sat/vB fee rate
+        )
+        fee_sats = int(estimated_size * 2.1)  # Assuming ~2.1 sat/vB fee rate
         fee_btc = Decimal(fee_sats) / Decimal(100_000_000)
 
         # Ensure user-specified amount is greater than the fee
