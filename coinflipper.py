@@ -426,6 +426,31 @@ async def withdraw(update: Update, context: CallbackContext):
         parse_mode="Markdown"
     )
 
+async def blockchaininfo(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    logging.info(f"User {user_id} requested blockchain status.")
+    rpc = AuthServiceProxy(f"http://{RPC_USER}:{RPC_PASSWORD}@{RPC_HOST}:{RPC_PORT}")
+
+    try:
+        info = rpc.getblockchaininfo()
+        block_height = info["blocks"]
+        difficulty = info["difficulty"]
+        mempool_size = info["mempoolsize"]
+        chain = info["chain"]
+
+        await update.message.reply_text(
+            f"📊 *Bitcoin Node Status*\n"
+            f"🌎 Network: `{chain}`\n"
+            f"⛏️ Block Height: `{block_height}`\n"
+            f"📈 Difficulty: `{difficulty}`\n"
+            f"📬 Mempool Size: `{mempool_size} tx`\n",
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        logging.error(f"Error fetching blockchain info: {e}")
+        await update.message.reply_text("❌ *Error fetching blockchain status!* 🚨", parse_mode="Markdown")
+
 
 def main():
     """Starts the bot"""
@@ -441,6 +466,7 @@ def main():
     app.add_handler(CommandHandler("withdraw", withdraw))
     app.add_handler(CommandHandler("coinflip", coinflip))
     app.add_handler(CommandHandler("trivia", trivia))
+    app.add_handler(CommandHandler("blockchaininfo", blockchaininfo))
     app.add_handler(CallbackQueryHandler(join_coinflip, pattern="^join_"))
     app.add_handler(CallbackQueryHandler(cancel_coinflip, pattern="^cancel_"))
     app.run_polling()
