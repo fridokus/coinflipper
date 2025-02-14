@@ -321,6 +321,7 @@ async def addresses(update: Update, context: CallbackContext):
         return
 
     address_list = "\n".join([row["address"] for row in rows])
+    logging.info(f"User {user_id} checked addresses:\n{address_list}")
     response = f"Your generated addresses:\n{address_list}"
 
     await update.message.reply_text(response)
