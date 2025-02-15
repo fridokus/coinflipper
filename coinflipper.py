@@ -347,11 +347,13 @@ async def balance(update: Update, context: CallbackContext):
 def select_utxos(rpc, amount_btc):
     utxos = rpc.listunspent(1, 9999999, [])
     selected, total_input = [], Decimal(0)
+
     for utxo in utxos:
         if total_input >= amount_btc:
             break
         selected.append(utxo)
         total_input += Decimal(utxo["amount"])
+
     return selected, total_input
 
 async def get_user_balance(user_id: int) -> int:
@@ -365,82 +367,48 @@ async def update_balance(user_id: int, amount: int):
     await conn.execute("UPDATE balances SET balance = balance - $1 WHERE user_id = $2", amount, user_id)
     await conn.close()
 
-def create_and_send_tx(rpc, inputs, withdraw_address, amount_btc, fee_btc, total_input):
-    outputs = {withdraw_address: float(amount_btc)}
-
-    # Calculate change
-    change_btc = total_input - amount_btc - fee_btc
-    if change_btc > 0:
-        change_address = rpc.getnewaddress()  # Get new address for change
-        outputs[change_address] = float(change_btc)
-
-    raw_tx = rpc.createrawtransaction(inputs, outputs)
-    signed_tx = rpc.signrawtransactionwithwallet(raw_tx)
-    return rpc.sendrawtransaction(signed_tx["hex"])
-
-
 async def withdraw(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
 
-    if len(context.args) != 2:
-        await update.message.reply_text("❌ *Usage:* `/withdraw <address> <amount_in_sats>`", parse_mode="Markdown")
+    if len(context.args) < 2 or len(context.args) > 3:
+        await update.message.reply_text(
+            "❌ *Usage:* `/withdraw <address> <amount_in_sats> [fee_rate]`",
+            parse_mode="Markdown"
+        )
         return
 
     withdraw_address = context.args[0]
     total_sats = int(context.args[1])
     total_btc = Decimal(total_sats) / Decimal(100_000_000)
 
+    # Parse optional fee_rate, default to 1.8 sat/vB
+    fee_rate = Decimal(context.args[2]) if len(context.args) == 3 else Decimal(1.8)
+
     balance = await get_user_balance(user_id)
     if balance is None or balance < total_sats:
-        logging.warning(f"User {user_id} attempted to withdraw {total_sats} sats but has insufficient balance.")
         await update.message.reply_text("⚠️ *Insufficient balance!* Please check your funds. 💰", parse_mode="Markdown")
         return
 
     rpc = AuthServiceProxy(f"http://{RPC_USER}:{RPC_PASSWORD}@{RPC_HOST}:{RPC_PORT}")
 
     try:
-        selected_utxos, total_input = select_utxos(rpc, total_btc)
-        if total_input < total_btc:
-            logging.warning(f"User {user_id} has insufficient confirmed UTXOs for withdrawal.")
-            await update.message.reply_text("⏳ *Not enough confirmed UTXOs!* Please wait for more confirmations. 🔄", parse_mode="Markdown")
-            return
+        options = {"fee_rate": float(fee_rate)}  # Convert Decimal to float for RPC
+        txid = rpc.send([{"address": withdraw_address, "amount": float(total_btc)}], 1, "", [], options)
 
-        inputs = [{"txid": utxo["txid"], "vout": utxo["vout"]} for utxo in selected_utxos]
-
-        # Estimate fee
-        raw_tx = rpc.createrawtransaction(inputs, {withdraw_address: float(total_btc)})
-        decoded_tx = rpc.decoderawtransaction(raw_tx)
-        estimated_size = decoded_tx["vsize"]  # Use virtual size
-        fee_sats = estimated_size * 1.8  # 1.8 sat/vB fee
-        fee_btc = Decimal(fee_sats) / Decimal(100_000_000)
-
-        # Ensure enough funds for withdrawal + fee
-        if total_input < total_btc + fee_btc:
-            logging.warning(f"User {user_id} has insufficient funds after fees.")
-            await update.message.reply_text("⚠️ *Not enough funds after fee deduction!* Consider a lower amount. 🔢", parse_mode="Markdown")
-            return
-
-        # Create & send transaction
-        txid = create_and_send_tx(rpc, inputs, withdraw_address, total_btc, fee_btc, total_input)
-
-        # Update user balance AFTER successful transaction
+        # Deduct from user balance
         await update_balance(user_id, total_sats)
+
+        await update.message.reply_text(
+            f"✅ *Withdrawal Successful!* 🎉\n"
+            f"💸 Sent `{total_sats}` sats to `{withdraw_address}`\n"
+            f"💰 *Fee Rate:* `{fee_rate}` sat/vB\n"
+            f"🔗 *Transaction ID:* `{txid}`",
+            parse_mode="Markdown"
+        )
 
     except Exception as e:
         logging.error(f"Error during withdrawal for user {user_id}: {e}")
         await update.message.reply_text(f"❌ *Error sending BTC:* `{str(e)}`", parse_mode="Markdown")
-        return
-
-    logging.info(f"User {user_id} withdrew {total_sats - fee_sats} sats to {withdraw_address}. Fee: {fee_sats} sats. TXID: {txid}")
-
-    await update.message.reply_text(
-        f"✅ *Withdrawal Successful!* 🎉\n"
-        f"💸 Sent `{int(total_btc * 100_000_000)}` sats to `{withdraw_address}`\n"
-        f"💰 *Fee:* `{fee_sats}` sats\n"
-        f"📉 *Total Deducted:* `{total_sats}` sats\n\n"
-        f"🔗 *Transaction ID:* `{txid}`",
-        parse_mode="Markdown"
-    )
 
 
 async def blockchaininfo(update: Update, context: CallbackContext):
