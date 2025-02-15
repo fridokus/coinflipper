@@ -393,7 +393,7 @@ async def withdraw(update: Update, context: CallbackContext):
 
     try:
         options = {"fee_rate": float(fee_rate)}  # Convert Decimal to float for RPC
-        txid = rpc.send([{"address": withdraw_address, "amount": float(total_btc)}], 1, "", [], options)
+        txid = rpc.send([{withdraw_address: float(total_btc)}], None, "unset", None, options)
 
         # Deduct from user balance
         await update_balance(user_id, total_sats)
