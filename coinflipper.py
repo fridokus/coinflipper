@@ -344,12 +344,6 @@ async def balance(update: Update, context: CallbackContext):
         )
 
 
-def create_and_send_tx(rpc, inputs, withdraw_address, amount_btc, fee_btc):
-    outputs = {withdraw_address: float(amount_btc - fee_btc)}
-    raw_tx = rpc.createrawtransaction(inputs, outputs)
-    signed_tx = rpc.signrawtransactionwithwallet(raw_tx)
-    return rpc.sendrawtransaction(signed_tx["hex"])
-
 def select_utxos(rpc, amount_btc):
     utxos = rpc.listunspent(1, 9999999, [])
     selected, total_input = [], Decimal(0)
@@ -370,6 +364,20 @@ async def update_balance(user_id: int, amount: int):
     conn = await get_db_connection()
     await conn.execute("UPDATE balances SET balance = balance - $1 WHERE user_id = $2", amount, user_id)
     await conn.close()
+
+def create_and_send_tx(rpc, inputs, withdraw_address, amount_btc, fee_btc, total_input):
+    outputs = {withdraw_address: float(amount_btc)}
+
+    # Calculate change
+    change_btc = total_input - amount_btc - fee_btc
+    if change_btc > 0:
+        change_address = rpc.getnewaddress()  # Get new address for change
+        outputs[change_address] = float(change_btc)
+
+    raw_tx = rpc.createrawtransaction(inputs, outputs)
+    signed_tx = rpc.signrawtransactionwithwallet(raw_tx)
+    return rpc.sendrawtransaction(signed_tx["hex"])
+
 
 async def withdraw(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
@@ -398,17 +406,24 @@ async def withdraw(update: Update, context: CallbackContext):
             return
 
         inputs = [{"txid": utxo["txid"], "vout": utxo["vout"]} for utxo in selected_utxos]
-        raw_tx = rpc.createrawtransaction(inputs, {withdraw_address: 0})
-        estimated_size = len(rpc.decoderawtransaction(raw_tx)["hex"]) // 2
-        fee_sats = estimated_size * 2
+
+        # Estimate fee
+        raw_tx = rpc.createrawtransaction(inputs, {withdraw_address: float(total_btc)})
+        decoded_tx = rpc.decoderawtransaction(raw_tx)
+        estimated_size = decoded_tx["vsize"]  # Use virtual size
+        fee_sats = estimated_size * 1.8  # 1.8 sat/vB fee
         fee_btc = Decimal(fee_sats) / Decimal(100_000_000)
 
-        if total_btc <= fee_btc:
-            logging.warning(f"User {user_id} tried withdrawing {total_sats} sats, but fee ({fee_sats} sats) is too high.")
-            await update.message.reply_text("⚠️ *Amount too small after fees!* Try a larger withdrawal. 🔢", parse_mode="Markdown")
+        # Ensure enough funds for withdrawal + fee
+        if total_input < total_btc + fee_btc:
+            logging.warning(f"User {user_id} has insufficient funds after fees.")
+            await update.message.reply_text("⚠️ *Not enough funds after fee deduction!* Consider a lower amount. 🔢", parse_mode="Markdown")
             return
 
-        txid = create_and_send_tx(rpc, inputs, withdraw_address, total_btc, fee_btc)
+        # Create & send transaction
+        txid = create_and_send_tx(rpc, inputs, withdraw_address, total_btc, fee_btc, total_input)
+
+        # Update user balance AFTER successful transaction
         await update_balance(user_id, total_sats)
 
     except Exception as e:
@@ -420,12 +435,13 @@ async def withdraw(update: Update, context: CallbackContext):
 
     await update.message.reply_text(
         f"✅ *Withdrawal Successful!* 🎉\n"
-        f"💸 Sent `{int((total_btc - fee_btc) * 100_000_000)}` sats to `{withdraw_address}`\n"
+        f"💸 Sent `{int(total_btc * 100_000_000)}` sats to `{withdraw_address}`\n"
         f"💰 *Fee:* `{fee_sats}` sats\n"
         f"📉 *Total Deducted:* `{total_sats}` sats\n\n"
         f"🔗 *Transaction ID:* `{txid}`",
         parse_mode="Markdown"
     )
+
 
 async def blockchaininfo(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
