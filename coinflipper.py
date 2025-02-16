@@ -128,7 +128,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
 
     coinflip = coinflips[(chat_id, msg_id)]
 
-    if datetime.utcnow() - coinflip["start_time"] > timedelta(hours=2):
+    if datetime.utcnow() - coinflip["start_time"] > timedelta(days=1):
         logging.info(
             f"Coinflip in chat {chat_id}, message {msg_id} timed out. Canceling coinflip."
         )
