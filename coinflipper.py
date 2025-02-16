@@ -209,7 +209,8 @@ async def join_coinflip(update: Update, context: CallbackContext):
             f"Coinflip in chat {chat_id}, message {msg_id}: Winner is user {winner_id} ({winner_name}) winning {total_prize} sats."
         )
         emoji = random.choice(["🔥", "🎉", "🥂", "💹", "🦈", "🗽"])
-        await query.edit_message_text(text=f"{emoji} {winner_name} won the coinflip and received {total_prize} sats!\n\nParticipants:\n{participant_list}")
+        await query.edit_message_text(text=f"{emoji} {winner_name} won the coinflip and received {total_prize} sats!\n\nParticipants:\n{participant_list}",
+                reply_markup=None)
         del coinflips[(chat_id, msg_id)]
 
 
