@@ -242,7 +242,7 @@ async def cancel_coinflip(update: Update, context: CallbackContext):
     logging.info(
         f"User {user_id} canceled coinflip in chat {chat_id}, message {msg_id}."
     )
-    await query.edit_message_text(ext="Coinflip cancelled")
+    await query.edit_message_text(text="Coinflip cancelled 🌠")
 
 
 async def get_db_connection():
