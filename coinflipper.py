@@ -108,7 +108,6 @@ async def coinflip(update: Update, context: CallbackContext):
 
 
 async def join_coinflip(update: Update, context: CallbackContext):
-    logging.info(coinflips)
     query = update.callback_query
     _, chat_id, msg_id = query.data.split("_")
     chat_id, msg_id = int(chat_id), int(msg_id)
@@ -185,8 +184,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
                 return
 
         logging.info(f"All participants have sufficient balance. Determining winner...")
-        winner = random.choice(coinflip["participants"])
-        winner_id, winner_name = winner
+        winner_id, winner_name = random.choice(coinflip["participants"])
         total_prize = coinflip["sats"] * (coinflip["max"] - 1)
 
         conn = await get_db_connection()
@@ -413,38 +411,13 @@ async def withdraw(update: Update, context: CallbackContext):
             f"💸 Sent `{total_sats}` sats to `{withdraw_address}`\n"
             f"💰 *Fee Rate:* `{fee_rate}` sat/vB\n"
             f"🔗 *Transaction ID:* `{txid}`",
+            f"🌏 https://mempool.space/tx/{txid}",
             parse_mode="Markdown"
         )
 
     except Exception as e:
         logging.error(f"Error during withdrawal for user {user_id}: {e}")
         await update.message.reply_text(f"❌ *Error sending BTC:* `{str(e)}`", parse_mode="Markdown")
-
-
-async def blockchaininfo(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    logging.info(f"User {user_id} requested blockchain status.")
-    rpc = AuthServiceProxy(f"http://{RPC_USER}:{RPC_PASSWORD}@{RPC_HOST}:{RPC_PORT}")
-
-    try:
-        info = rpc.getblockchaininfo()
-        block_height = info["blocks"]
-        difficulty = info["difficulty"]
-        mempool_size = info["mempoolsize"]
-        chain = info["chain"]
-
-        await update.message.reply_text(
-            f"📊 *Bitcoin Node Status*\n"
-            f"🌎 Network: `{chain}`\n"
-            f"⛏️ Block Height: `{block_height}`\n"
-            f"📈 Difficulty: `{difficulty}`\n"
-            f"📬 Mempool Size: `{mempool_size} tx`\n",
-            parse_mode="Markdown"
-        )
-
-    except Exception as e:
-        logging.error(f"Error fetching blockchain info: {e}")
-        await update.message.reply_text("❌ *Error fetching blockchain status!* 🚨", parse_mode="Markdown")
 
 
 def main():
@@ -461,7 +434,6 @@ def main():
     app.add_handler(CommandHandler("withdraw", withdraw))
     app.add_handler(CommandHandler("coinflip", coinflip))
     app.add_handler(CommandHandler("trivia", trivia))
-    app.add_handler(CommandHandler("blockchaininfo", blockchaininfo))
     app.add_handler(CallbackQueryHandler(join_coinflip, pattern="^join_"))
     app.add_handler(CallbackQueryHandler(cancel_coinflip, pattern="^cancel_"))
     app.run_polling()
