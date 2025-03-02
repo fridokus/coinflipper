@@ -96,7 +96,7 @@ async def flip(update: Update, context: CallbackContext, is_giveflip: bool):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     msg = await update.message.reply_text(
-        f"🎲 {'Giveflip' if is_giveflip else 'Coinflip'} started! {sats} sats {'given' if is_giveflip else 'entry'}. {n_participants} players needed.",
+        f"{'🎁 Giveflip' if is_giveflip else '🎲 Coinflip'} started! {sats} sats {'given' if is_giveflip else 'entry'}. {n_participants} players needed.",
         reply_markup=reply_markup,
     )
 
