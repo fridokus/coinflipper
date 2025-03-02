@@ -34,15 +34,21 @@ DB_NAME = "coinflipper"
 DB_USER = "botuser"
 DB_PASSWORD = "123"
 
-coinflips = {}
+flips = {}
 
 with open('trivia.txt', 'r') as f:
     TRIVIA = f.read().splitlines()
 
+async def giveflip(update: Update, context: CallbackContext):
+    await flip(update, context, True)
+
 async def coinflip(update: Update, context: CallbackContext):
+    await flip(update, context, False)
+
+async def flip(update: Update, context: CallbackContext, is_giveflip: bool):
     if len(context.args) != 2:
         await update.message.reply_text(
-            "Usage: /coinflip <sats> <number of participants>"
+            f"Usage: /{'give' if is_giveflip else 'coin'}flip <sats> <number of participants>"
         )
         return
 
@@ -54,11 +60,11 @@ async def coinflip(update: Update, context: CallbackContext):
     message = update.message
 
     logging.info(
-        f"User {user_id} ({username}) initiated coinflip: entry={sats} sats, n_participants={n_participants} in chat {chat_id}."
+        f"User {user_id} ({username}) initiated {'giveflip' if is_giveflip else 'coinflip'}: entry={sats} sats, n_participants={n_participants} in chat {chat_id}."
     )
 
-    if n_participants < 2:
-        await update.message.reply_text("Need >=2 participants.")
+    if n_participants < 1 + not is_giveflip:
+        await update.message.reply_text(f"Need >={1 + not is_giveflip} participants.")
         return
 
     conn = await get_db_connection()
@@ -69,10 +75,10 @@ async def coinflip(update: Update, context: CallbackContext):
 
     if balance is None or balance < sats:
         logging.info(
-            f"User {user_id} ({username}) has insufficient balance ({balance}) for coinflip entry of {sats} sats."
+            f"User {user_id} ({username}) has insufficient balance ({balance}) for {'giveflip' if is_giveflip else 'coinflip'} entry of {sats} sats."
         )
         await update.message.reply_text(
-            "You don't have enough balance to start this coinflip."
+            "You don't have enough balance to start this flip."
         )
         return
 
@@ -90,20 +96,21 @@ async def coinflip(update: Update, context: CallbackContext):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     msg = await update.message.reply_text(
-        f"🎲 Coinflip started! {sats} sats entry. {n_participants} players needed.",
+        f"🎲 {'Giveflip' if is_giveflip else 'Coinflip'} started! {sats} sats {'given' if is_giveflip else 'entry'}. {n_participants} players needed.",
         reply_markup=reply_markup,
     )
 
-    coinflips[(chat_id, message.message_id)] = {
+    flips[(chat_id, message.message_id)] = {
         "creator": user_id,
         "sats": sats,
         "max": n_participants,
         "participants": [],
         "start_time": datetime.utcnow(),
+        "is_giveflip": is_giveflip,
     }
 
     logging.info(
-        f"Coinflip created by user {user_id} ({username}) with message_id {msg.message_id} in chat {chat_id}."
+        f"{'Giveflip' if is_giveflip else 'Coinflip'} created by user {user_id} ({username}) with message_id {msg.message_id} in chat {chat_id}."
     )
 
 
@@ -115,31 +122,31 @@ async def join_coinflip(update: Update, context: CallbackContext):
     username = query.from_user.username or query.from_user.full_name
 
     logging.info(
-        f"User {user_id} ({username}) attempting to join coinflip in chat {chat_id}, message {msg_id}."
+        f"User {user_id} ({username}) attempting to join flip in chat {chat_id}, message {msg_id}."
     )
 
-    if (chat_id, msg_id) not in coinflips:
+    if (chat_id, msg_id) not in flips:
         logging.warning(
-            f"User {user_id} ({username}) attempted to join a non-existent coinflip in chat {chat_id}, message {msg_id}."
+            f"User {user_id} ({username}) attempted to join a non-existent flip in chat {chat_id}, message {msg_id}."
         )
-        await query.answer("This coinflip no longer exists.")
+        await query.answer("This flip no longer exists.")
         return
 
-    coinflip = coinflips[(chat_id, msg_id)]
+    flip = flips[(chat_id, msg_id)]
 
-    if datetime.utcnow() - coinflip["start_time"] > timedelta(days=1):
+    if datetime.utcnow() - flip["start_time"] > timedelta(days=1):
         logging.info(
-            f"Coinflip in chat {chat_id}, message {msg_id} timed out. Canceling coinflip."
+            f"Coinflip in chat {chat_id}, message {msg_id} timed out. Cancelling flip."
         )
-        del coinflips[(chat_id, msg_id)]
+        del flips[(chat_id, msg_id)]
         await context.bot.edit_message_text(
-            chat_id=chat_id, message_id=msg_id, text="Coinflip canceled due to timeout."
+            chat_id=chat_id, message_id=msg_id, text="Flip cancelled due to timeout."
         )
         return
 
-    if user_id in [p[0] for p in coinflip["participants"]]:
+    if user_id in [p[0] for p in flip["participants"]]:
         logging.info(
-            f"User {user_id} ({username}) already joined coinflip in chat {chat_id}, message {msg_id}."
+            f"User {user_id} ({username}) already joined flip in chat {chat_id}, message {msg_id}."
         )
         await query.answer("You have already joined.")
         return
@@ -149,53 +156,74 @@ async def join_coinflip(update: Update, context: CallbackContext):
         "SELECT balance FROM balances WHERE user_id = $1", user_id
     )
     await conn.close()
-    if balance is None or balance < coinflip["sats"]:
+    if balance is None:
         logging.info(
-            f"User {user_id} ({username}) has insufficient balance ({balance}) to join coinflip requiring {coinflip['sats']} sats."
+            f"User {user_id} ({username}) tried to join a flip without an account."
+        )
+        await query.answer("Use /address to create an account.")
+        return
+
+    if balance < flip["sats"] and not flip['is_giveflip']:
+        logging.info(
+            f"User {user_id} ({username}) has insufficient balance ({balance}) to join coinflip requiring {flip['sats']} sats."
         )
         await query.answer("You don't have enough balance.")
         return
 
-    coinflip["participants"].append((user_id, username))
+    flip["participants"].append((user_id, username))
     logging.info(
-        f"User {user_id} ({username}) successfully joined coinflip in chat {chat_id}, message {msg_id}. Total participants: {len(coinflip['participants'])}."
+        f"User {user_id} ({username}) successfully joined flip in chat {chat_id}, message {msg_id}. Total participants: {len(flip['participants'])}."
     )
 
-    participant_list = "\n".join([p[1] for p in coinflip["participants"]])
+    participant_list = "\n".join([p[1] for p in flip["participants"]])
     keyboard = [
         [InlineKeyboardButton("Join", callback_data=f"join_{chat_id}_{msg_id}")],
         [InlineKeyboardButton("Cancel", callback_data=f"cancel_{chat_id}_{msg_id}")],
     ]
     await query.edit_message_text(
-        text=f"🎲 Coinflip started! {coinflip['sats']} sats entry. {coinflip['max']} players needed.\n\nParticipants:\n{participant_list}",
+        text=f"🎲 {'Giveflip' if flip['is_giveflip'] else 'Coinflip'} started! {flip['sats']} sats {'given' if flip['is_giveflip'] else 'entry'}. {flip['max']} players needed.\n\nParticipants:\n{participant_list}",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-    if len(coinflip["participants"]) >= coinflip["max"]:
+    if len(flip["participants"]) >= flip["max"]:
         logging.info(
-            f"Coinflip in chat {chat_id}, message {msg_id} reached max participants. Determining winner..."
+            f"{'Giveflip' if flip['is_giveflip'] else 'Coinflip'} in chat {chat_id}, message {msg_id} reached max participants. Determining winner..."
         )
-        for user in coinflip["participants"]:
-            user_id = user[0]
-            balance = await get_user_balance(user_id)
-            if balance < coinflip["sats"]:
-                logging.warning(f"Some participants lack funds")
-                await query.edit_message_text(text=f"😳 Users lack balance to flip")
+        if flip['is_giveflip']:
+            balance = await get_user_balance(flip['creator'])
+            if balance < flip["sats"]:
+                logging.warning(f"Giver {flip['creator']} lacks funds")
+                await query.edit_message_text(text=f"😳 Giver lacks balance to giveflip")
                 return
+        else:
+            for user in flip["participants"]:
+                user_id = user[0]
+                balance = await get_user_balance(user_id)
+                if balance < flip["sats"]:
+                    logging.warning(f"Some participants lack funds")
+                    await query.edit_message_text(text=f"😳 Users lack balance to coinflip")
+                    return
 
-        logging.info(f"All participants have sufficient balance. Determining winner...")
-        winner_id, winner_name = random.choice(coinflip["participants"])
-        total_prize = coinflip["sats"] * (coinflip["max"] - 1)
+            logging.info(f"All participants have sufficient balance. Determining winner...")
+        winner_id, winner_name = random.choice(flip["participants"])
+        total_prize = flip['sats'] if flip['is_giveflip'] else (flip["sats"] * (flip["max"] - 1))
 
         conn = await get_db_connection()
         async with conn.transaction():
-            for participant_id, _ in coinflip["participants"]:
-                if participant_id != winner_id:
-                    await conn.execute(
-                        "UPDATE balances SET balance = balance - $1 WHERE user_id = $2",
-                        coinflip["sats"],
-                        participant_id,
-                    )
+            if is_giveflip:
+                await conn.execute(
+                    "UPDATE balances SET balance = balance - $1 WHERE user_id = $2",
+                    flip["sats"],
+                    flip['creator'],
+                )
+            else:
+                for participant_id, _ in flip["participants"]:
+                    if participant_id != winner_id:
+                        await conn.execute(
+                            "UPDATE balances SET balance = balance - $1 WHERE user_id = $2",
+                            flip["sats"],
+                            participant_id,
+                        )
             await conn.execute(
                 "UPDATE balances SET balance = balance + $1 WHERE user_id = $2",
                 total_prize,
@@ -204,7 +232,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
         await conn.close()
 
         logging.info(
-            f"Coinflip in chat {chat_id}, message {msg_id}: Winner is user {winner_id} ({winner_name}) winning {total_prize} sats."
+            f"{'Giveflip' if flip['is_giveflip'] else 'Coinflip'} in chat {chat_id}, message {msg_id}: Winner is user {winner_id} ({winner_name}) winning {total_prize} sats."
         )
         emoji = random.choice([
             "🔥", "🎉", "🥂", "💹", "🦈", "🗽", "🏆", "🏅", "🥇", "💰", "💎", "🎖️", "🚀", "⚡",
@@ -216,9 +244,9 @@ async def join_coinflip(update: Update, context: CallbackContext):
             "🌞", "🌅", "🌄", "🎑", "🚨", "💣", "📯", "🔊", "📢", "📣", "🎙️", "🎚️", "🎛️",
             "🎚️", "📻", "📡", "🛰️", "💈", "🔱", "🏵️", "🧧", "🎗️", "🎟️"
         ])
-        await query.edit_message_text(text=f"{emoji} {winner_name} won the coinflip and received {total_prize} sats!\n\nParticipants:\n{participant_list}",
+        await query.edit_message_text(text=f"{emoji} {winner_name} won the {'giveflip' if is_giveflip else 'coinflip'} and received {total_prize} sats!\n\nParticipants:\n{participant_list}",
                 reply_markup=None)
-        del coinflips[(chat_id, msg_id)]
+        del flips[(chat_id, msg_id)]
 
 
 async def cancel_coinflip(update: Update, context: CallbackContext):
@@ -228,27 +256,27 @@ async def cancel_coinflip(update: Update, context: CallbackContext):
     user_id = query.from_user.id
 
     logging.info(
-        f"User {user_id} requested cancellation of coinflip in chat {chat_id}, message {msg_id}."
+        f"User {user_id} requested cancellation of flip in chat {chat_id}, message {msg_id}."
     )
 
-    if (chat_id, msg_id) not in coinflips:
+    if (chat_id, msg_id) not in flips:
         logging.warning(
-            f"User {user_id} attempted to cancel a non-existent coinflip in chat {chat_id}, message {msg_id}."
+            f"User {user_id} attempted to cancel a non-existent flip in chat {chat_id}, message {msg_id}."
         )
-        await query.answer("This coinflip no longer exists.")
+        await query.answer("This flip no longer exists.")
         return
 
-    coinflip = coinflips[(chat_id, msg_id)]
-    if user_id != coinflip["creator"]:
+    flip = flips[(chat_id, msg_id)]
+    if user_id != flip["creator"]:
         logging.info(
-            f"User {user_id} is not the creator and cannot cancel coinflip in chat {chat_id}, message {msg_id}."
+            f"User {user_id} is not the creator and cannot cancel flip in chat {chat_id}, message {msg_id}."
         )
         await query.answer("Only the creator can cancel.")
         return
 
-    del coinflips[(chat_id, msg_id)]
+    del flips[(chat_id, msg_id)]
     logging.info(
-        f"User {user_id} canceled coinflip in chat {chat_id}, message {msg_id}."
+        f"User {user_id} canceled flip in chat {chat_id}, message {msg_id}."
     )
     await query.edit_message_text(text="Coinflip cancelled 🌠")
 
@@ -272,7 +300,8 @@ async def start(update: Update, context: CallbackContext):
         "🏠 `/address` – Get a new Bitcoin deposit address\n"
         "🏘 `/addresses` – List generated addresses\n"
         "📤 `/withdraw <address> <amount_in_sats>` – Withdraw Bitcoin to an external address\n"
-        "🐬 `/coinflip <sats> <number of participants>` – Start coinflip, winner takes all\n\n"
+        "🐬 `/coinflip <sats> <number of participants>` – Start coinflip, winner takes all\n"
+        "🎁 `/giveflip <sats> <number of participants>` – Start giveflip, winner takes all\n\n"
         "🔗 *Source Code:* [GitHub Repository](https://github.com/fridokus/coinflipper)\n\n"
         "⚠  *NOTE:* This bot is super unstable and any funds sent in will possibly, and even probably, get lost forever. Use at your own risk and with small amounts..\n\n"
         "Have fun flipping coins! 🚀"
@@ -433,6 +462,7 @@ def main():
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("withdraw", withdraw))
     app.add_handler(CommandHandler("coinflip", coinflip))
+    app.add_handler(CommandHandler("giveflip", giveflip))
     app.add_handler(CommandHandler("trivia", trivia))
     app.add_handler(CallbackQueryHandler(join_coinflip, pattern="^join_"))
     app.add_handler(CallbackQueryHandler(cancel_coinflip, pattern="^cancel_"))
