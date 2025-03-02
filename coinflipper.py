@@ -63,8 +63,8 @@ async def flip(update: Update, context: CallbackContext, is_giveflip: bool):
         f"User {user_id} ({username}) initiated {'giveflip' if is_giveflip else 'coinflip'}: entry={sats} sats, n_participants={n_participants} in chat {chat_id}."
     )
 
-    if n_participants < 1 + not is_giveflip:
-        await update.message.reply_text(f"Need >={1 + not is_giveflip} participants.")
+    if n_participants < 1 + int(not is_giveflip):
+        await update.message.reply_text(f"Need >={1 + int(not is_giveflip)} participants.")
         return
 
     conn = await get_db_connection()
@@ -210,7 +210,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
 
         conn = await get_db_connection()
         async with conn.transaction():
-            if is_giveflip:
+            if flip['is_giveflip']:
                 await conn.execute(
                     "UPDATE balances SET balance = balance - $1 WHERE user_id = $2",
                     flip["sats"],
@@ -244,7 +244,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
             "🌞", "🌅", "🌄", "🎑", "🚨", "💣", "📯", "🔊", "📢", "📣", "🎙️", "🎚️", "🎛️",
             "🎚️", "📻", "📡", "🛰️", "💈", "🔱", "🏵️", "🧧", "🎗️", "🎟️"
         ])
-        await query.edit_message_text(text=f"{emoji} {winner_name} won the {'giveflip' if is_giveflip else 'coinflip'} and received {total_prize} sats!\n\nParticipants:\n{participant_list}",
+        await query.edit_message_text(text=f"{emoji} {winner_name} won the {'giveflip' if flip['is_giveflip'] else 'coinflip'} and received {total_prize} sats!\n\nParticipants:\n{participant_list}",
                 reply_markup=None)
         del flips[(chat_id, msg_id)]
 
