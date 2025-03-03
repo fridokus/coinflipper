@@ -157,11 +157,13 @@ async def join_coinflip(update: Update, context: CallbackContext):
     )
     await conn.close()
     if balance is None:
+        await conn.execute(
+            "INSERT INTO balances (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+            user_id,
+        )
         logging.info(
             f"User {user_id} ({username}) tried to join a flip without an account."
         )
-        await query.answer("Use /address to create an account.")
-        return
 
     if balance < flip["sats"] and not flip['is_giveflip']:
         logging.info(
@@ -181,7 +183,7 @@ async def join_coinflip(update: Update, context: CallbackContext):
         [InlineKeyboardButton("Cancel", callback_data=f"cancel_{chat_id}_{msg_id}")],
     ]
     await query.edit_message_text(
-        text=f"🎲 {'Giveflip' if flip['is_giveflip'] else 'Coinflip'} started! {flip['sats']} sats {'given' if flip['is_giveflip'] else 'entry'}. {flip['max']} players needed.\n\nParticipants:\n{participant_list}",
+        text=f"{'🎁 Giveflip' if flip['is_giveflip'] else '🎲 Coinflip'} started! {flip['sats']} sats {'given' if flip['is_giveflip'] else 'entry'}. {flip['max']} players needed.\n\nParticipants:\n{participant_list}",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -342,7 +344,7 @@ async def address(update: Update, context: CallbackContext):
     )
     await conn.close()
     logging.info(f"User {user_id} generated a new address: {new_address}")
-    await update.message.reply_text(f"Your Bitcoin address: {new_address}")
+    await update.message.reply_text(f"Your Bitcoin address:\n\n`{new_address}`", parse_mode="Markdown")
 
 
 async def addresses(update: Update, context: CallbackContext):
@@ -359,9 +361,9 @@ async def addresses(update: Update, context: CallbackContext):
 
     address_list = "\n".join([row["address"] for row in rows])
     logging.info(f"User {user_id} checked addresses:\n{address_list}")
-    response = f"Your generated addresses:\n{address_list}"
+    response = f"Your generated addresses:\n```\n{address_list}\n```"
 
-    await update.message.reply_text(response)
+    await update.message.reply_text(response, parse_mode='Markdown')
 
 
 async def balance(update: Update, context: CallbackContext):
