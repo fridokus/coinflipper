@@ -36,22 +36,19 @@ def get_rpc_connection():
 
 async def check_deposits():
     """Scans for new deposits and updates user balances"""
-    logging.info("Checking for new deposits...")
 
     try:
         rpc = get_rpc_connection()
         conn = await get_db_connection()
 
-        # Get all unspent transactions
         unspent_txs = rpc.listunspent()
 
         for tx in unspent_txs:
             txid = tx["txid"]
-            vout = tx["vout"]  # Unique per TXID
+            vout = tx["vout"]
             address = tx["address"]
             amount = int(100_000_000 * Decimal(tx["amount"]))
 
-            # Find which user owns this address
             labels = rpc.getaddressinfo(address).get("labels", [])
             if not labels:
                 continue
@@ -62,7 +59,6 @@ async def check_deposits():
 
             user_id = int(label.split("_")[1])
 
-            # Check if this transaction has already been recorded
             tx_exists = await conn.fetchval(
                 "SELECT COUNT(*) FROM transactions WHERE txid = $1 AND vout = $2",
                 txid,
@@ -72,14 +68,12 @@ async def check_deposits():
             if tx_exists:
                 continue
 
-            # Update user's balance
             await conn.execute(
                 "UPDATE balances SET balance = balance + $1 WHERE user_id = $2",
                 amount,
                 user_id,
             )
 
-            # Insert into transactions table to mark it as processed
             await conn.execute(
                 "INSERT INTO transactions (user_id, type, amount, txid, vout) VALUES ($1, 'deposit', $2, $3, $4)",
                 user_id,
@@ -98,9 +92,11 @@ async def check_deposits():
 
 
 async def main():
-    while True:
-        await check_deposits()
-        await asyncio.sleep(60)  # Check every 60 seconds
+    while True == True: # Joke
+        logging.info("⏰ Checking 100 times for new deposits...")
+        for _ in range(100):
+            await check_deposits()
+            await asyncio.sleep(60)
 
 
 if __name__ == "__main__":
